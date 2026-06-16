@@ -1,54 +1,37 @@
-require 'securerandom'
-require 'digest'
+# frozen_string_literal: true
 
 class IdempotencyController < ApplicationController
   def check
     id_key = request.headers['Idempotency-Key'] || request.headers['HTTP_IDEMPOTENCY_KEY']
-    return render json: {error: 'missing idempotency key'}, status: 400 unless id_key.present?
-    body = request.raw_post.to_s
+    return render json: { error: 'missing idempotency key' }, status: :bad_request unless id_key.present?
 
-    service = Idempotency::CheckService.new(id_key: id_key, body: body)
-    res = service.call
+    body = request.raw_post.to_s
+    res = Idempotency::CheckService.new(id_key: id_key, body: body).call
 
     case res[:status]
-    when :first
-      render json: {token: res[:token]}, status: 200
-    when :inflight
-      render json: {token: res[:token], status: 'inflight'}, status: 200
-    when :committed
-      render json: res[:body], status: res[:status_code]
-    when :conflict
-      head :conflict
-    else
-      head :internal_server_error
+    when :first then render json: { token: res[:token] }, status: :ok
+    when :inflight then render json: { token: res[:token], status: 'inflight' }, status: :ok
+    when :committed then render json: res[:body], status: res[:status_code]
+    when :conflict then head :conflict
+    else head :internal_server_error
     end
   end
 
   def commit
     id_key = request.headers['Idempotency-Key'] || request.headers['HTTP_IDEMPOTENCY_KEY']
     token = request.headers['Idempotency-Commit-Token'] || request.headers['HTTP_IDEMPOTENCY_COMMIT_TOKEN']
-    return render json: {error: 'missing headers'}, status: 400 unless id_key.present? && token.present?
+    return render json: { error: 'missing headers' }, status: :bad_request unless id_key.present? && token.present?
 
-    begin
-      payload = JSON.parse(request.body.read)
-    rescue JSON::ParserError, EOFError
-      payload = {}
-    end
+    payload = parse_json_request_body
 
-    service = Idempotency::CommitService.new(id_key: id_key, token: token, payload: payload)
-    res = service.call
+    res = Idempotency::CommitService.new(id_key: id_key, token: token, payload: payload).call
 
     case res[:status]
-    when :ok
-      render json: {ok: true}, status: 200
-    when :already
-      render json: res[:body], status: res[:status_code]
-    when :conflict
-      head :conflict
-    when :no_key
-      head :not_found
-    else
-      head :internal_server_error
+    when :ok then render json: { ok: true }, status: :ok
+    when :already then render json: res[:body], status: res[:status_code]
+    when :conflict then head :conflict
+    when :no_key then head :not_found
+    else head :internal_server_error
     end
   end
 
@@ -57,22 +40,28 @@ class IdempotencyController < ApplicationController
   end
 
   def ready
-    ok = true
-    begin
-      rc = Redis.new(url: ENV.fetch('REDIS_URL', 'redis://redis:6379/0'))
-      rc.ping
-    rescue => _e
-      ok = false
-    end
-    begin
-      ActiveRecord::Base.connection_pool.with_connection { |c| c.active? }
-    rescue => _e
-      ok = false
-    end
-    if ok
-      head :ok
-    else
-      head :service_unavailable
-    end
+    healthy_redis = safe_redis_ping
+    healthy_db = safe_db_check
+    healthy_redis && healthy_db ? head(:ok) : head(:service_unavailable)
+  end
+
+  private
+
+  def parse_json_request_body
+    JSON.parse(request.body.read)
+  rescue JSON::ParserError, EOFError
+    {}
+  end
+
+  def safe_redis_ping
+    Redis.new(url: ENV.fetch('REDIS_URL', 'redis://redis:6379/0')).ping == 'PONG'
+  rescue StandardError
+    false
+  end
+
+  def safe_db_check
+    ActiveRecord::Base.connection_pool.with_connection { |c| c.active? }
+  rescue StandardError
+    false
   end
 end
