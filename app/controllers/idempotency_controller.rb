@@ -64,29 +64,53 @@ class IdempotencyController < ApplicationController
     token = request.headers['Idempotency-Commit-Token'] || request.headers['HTTP_IDEMPOTENCY_COMMIT_TOKEN']
     return render json: {error: 'missing headers'}, status: 400 unless id_key.present? && token.present?
     redis_key = "idem:#{id_key}"
-    stored_token = $redis.hget(redis_key, 'token')
-    unless stored_token && ActiveSupport::SecurityUtils.secure_compare(stored_token, token)
-      return head :conflict
+
+    # Parse JSON payload
+    begin
+      payload = JSON.parse(request.body.read)
+    rescue JSON::ParserError, EOFError
+      payload = {}
     end
 
-    payload = request.request_parameters rescue {}
-    # Expecting JSON like: { "status": 200, "body": {...}, "ttl": 86400 }
     status_code = (payload['status'] || 200).to_i
     resp_body = payload['body'] || {}
     ttl = (payload['ttl'] || ENV['IDEMPOTENCY_TTL_SECONDS'] || 86400).to_i
-    expires_at = Time.now + ttl
 
-    record = IdempotencyRecord.find_or_initialize_by(idempotency_key: id_key)
-    record.fingerprint = $redis.hget(redis_key, 'fingerprint')
-    record.response_body = resp_body
-    record.response_status = status_code
-    record.expires_at = expires_at
-    record.save!
+    # Use Lua script to atomically verify token and mark as committed
+    script = File.read(Rails.root.join('lib/redis_scripts/commit_and_store.lua'))
+    res = $redis.eval(script, keys: [redis_key], argv: [token, status_code, resp_body.to_json, ttl])
 
-    $redis.hmset(redis_key, 'committed', '1', 'response_status', status_code, 'response_body', resp_body.to_json)
-    $redis.expire(redis_key, ttl)
-
-    render json: {ok: true}, status: 200
+    case res[0]
+    when 'ok'
+      # Persist durable record (best-effort; if this fails, the Redis state will still indicate committed)
+      begin
+        record = IdempotencyRecord.find_or_initialize_by(idempotency_key: id_key)
+        record.fingerprint = $redis.hget(redis_key, 'fingerprint')
+        record.response_body = resp_body
+        record.response_status = status_code
+        record.expires_at = Time.now + ttl
+        record.save!
+      rescue => e
+        Rails.logger.error("Failed to persist idempotency record: #{e.message}")
+      end
+      render json: {ok: true}, status: 200
+    when 'already'
+      # Already committed; return stored response
+      stored_status = res[1] ? res[1].to_i : 200
+      stored_body = res[2]
+      begin
+        parsed = JSON.parse(stored_body)
+      rescue
+        parsed = stored_body
+      end
+      render json: parsed, status: stored_status
+    when 'conflict'
+      head :conflict
+    when 'no_key'
+      head :not_found
+    else
+      head :internal_server_error
+    end
   end
 
   def health
