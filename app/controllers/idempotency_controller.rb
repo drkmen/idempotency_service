@@ -2,7 +2,6 @@ require 'securerandom'
 require 'digest'
 
 class IdempotencyController < ApplicationController
-  skip_before_action :verify_authenticity_token
 
   CHECK_SCRIPT = <<~LUA
     local key = KEYS[1]
