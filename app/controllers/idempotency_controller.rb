@@ -36,7 +36,7 @@ class IdempotencyController < ApplicationController
     token = SecureRandom.uuid
     ttl = (ENV['IDEMPOTENCY_TTL_SECONDS'] || '86400').to_i
     redis_key = "idem:#{id_key}"
-    res = Redis.current.eval(CHECK_SCRIPT, keys: [redis_key], argv: [fingerprint, token, ttl])
+    res = $redis.eval(CHECK_SCRIPT, keys: [redis_key], argv: [fingerprint, token, ttl])
 
     case res[0]
     when 'first'
@@ -65,7 +65,7 @@ class IdempotencyController < ApplicationController
     token = request.headers['Idempotency-Commit-Token'] || request.headers['HTTP_IDEMPOTENCY_COMMIT_TOKEN']
     return render json: {error: 'missing headers'}, status: 400 unless id_key.present? && token.present?
     redis_key = "idem:#{id_key}"
-    stored_token = Redis.current.hget(redis_key, 'token')
+    stored_token = $redis.hget(redis_key, 'token')
     unless stored_token && ActiveSupport::SecurityUtils.secure_compare(stored_token, token)
       return head :conflict
     end
@@ -78,14 +78,14 @@ class IdempotencyController < ApplicationController
     expires_at = Time.now + ttl
 
     record = IdempotencyRecord.find_or_initialize_by(idempotency_key: id_key)
-    record.fingerprint = Redis.current.hget(redis_key, 'fingerprint')
+    record.fingerprint = $redis.hget(redis_key, 'fingerprint')
     record.response_body = resp_body
     record.response_status = status_code
     record.expires_at = expires_at
     record.save!
 
-    Redis.current.hmset(redis_key, 'committed', '1', 'response_status', status_code, 'response_body', resp_body.to_json)
-    Redis.current.expire(redis_key, ttl)
+    $redis.hmset(redis_key, 'committed', '1', 'response_status', status_code, 'response_body', resp_body.to_json)
+    $redis.expire(redis_key, ttl)
 
     render json: {ok: true}, status: 200
   end
@@ -97,7 +97,7 @@ class IdempotencyController < ApplicationController
   def ready
     ok = true
     begin
-      Redis.current.ping
+      $redis.ping
     rescue => _e
       ok = false
     end

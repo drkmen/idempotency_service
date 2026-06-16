@@ -10,7 +10,7 @@ RSpec.describe 'Redis Lua script concurrency', type: :model do
     threads = 10.times.map do
       Thread.new do
         token = SecureRandom.uuid
-        r = Redis.current.eval(script, keys: [key], argv: ['fp', token, 86400])
+        r = $redis.eval(script, keys: [key], argv: ['fp', token, 86400])
         results << r
       end
     end
