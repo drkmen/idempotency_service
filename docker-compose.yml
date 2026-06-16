@@ -18,6 +18,7 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:password@db:5432/idempotency_dev
       REDIS_URL: redis://redis:6379/0
+      RAILS_ENV: development
     depends_on:
       - db
       - redis
