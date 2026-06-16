@@ -15,7 +15,7 @@ services:
     ports:
       - "6379:6379"
   web:
-    build: ./service
+    build: .
     command: bash -lc "bundle exec rails db:create db:migrate && bundle exec puma -C config/puma.rb"
     ports:
       - "3000:3000"
