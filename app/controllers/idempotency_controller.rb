@@ -52,7 +52,6 @@ class IdempotencyController < ApplicationController
     end
 
     raw = request.body.read.to_s
-    payload = {}
 
     if raw.strip.empty?
       payload = {}
