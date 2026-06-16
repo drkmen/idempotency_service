@@ -97,12 +97,13 @@ class IdempotencyController < ApplicationController
   def ready
     ok = true
     begin
-      $redis.ping
+      rc = Redis.new(url: ENV.fetch('REDIS_URL', 'redis://redis:6379/0'))
+      rc.ping
     rescue => _e
       ok = false
     end
     begin
-      ActiveRecord::Base.connection.active?
+      ActiveRecord::Base.connection_pool.with_connection { |c| c.active? }
     rescue => _e
       ok = false
     end
