@@ -27,10 +27,17 @@ module Idempotency
       status_code = (payload['status'] || 200).to_i
       body = payload['body'] || {}
       script = Rails.root.join('lib/redis_scripts/commit_and_store.lua').read
-      res = redis.eval(script, keys: [redis_key], argv: [token, status_code, body.to_json, ttl])
+
+      begin
+        res = redis.eval(script, keys: [redis_key], argv: [token, status_code, body.to_json, ttl])
+      rescue StandardError => e
+        Rails.logger.error('Idempotency::CommitService - redis unavailable')
+        return { status: :error, error_code: 'idempotency_store_unavailable', error_message: 'Idempotency store unavailable' }
+      end
 
       case res[0]
       when 'ok'
+        # persist best-effort after a successful redis commit
         persist_record(status_code, body)
         { status: :ok }
       when 'already'
@@ -43,7 +50,7 @@ module Idempotency
       when 'no_key'
         { status: :no_key }
       else
-        { status: :error }
+        { status: :error, error_code: 'unknown_redis_response', error_message: 'Unknown response from idempotency store' }
       end
     end
 

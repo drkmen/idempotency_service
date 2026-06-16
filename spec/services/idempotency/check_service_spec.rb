@@ -1,39 +1,65 @@
 require 'rails_helper'
 
-RSpec.describe Idempotency::CheckService do
-  let(:redis) { double('redis') }
+RSpec.describe Idempotency::CheckService, type: :service do
+  subject(:call_service) { described_class.new(id_key: id_key, body: body, redis: redis, ttl: ttl).call }
+
+  let(:redis) { instance_double(Redis) }
   let(:id_key) { 'test-key' }
   let(:body) { '{"a":1}' }
+  let(:ttl) { 86_400 }
 
-  it 'returns first with token when redis reports first' do
-    allow(redis).to receive(:eval).and_return(['first', 'tok-123'])
-    svc = described_class.new(id_key: id_key, body: body, redis: redis)
-    res = svc.call
-    expect(res[:status]).to eq(:first)
-    expect(res[:token]).to eq('tok-123')
+  context 'when redis reports first' do
+    before { allow(redis).to receive(:eval).and_return(['first', 'tok-123']) }
+
+    it 'returns first and token' do
+      expect(call_service[:status]).to eq(:first)
+      expect(call_service[:token]).to eq('tok-123')
+    end
   end
 
-  it 'returns inflight when redis reports inflight' do
-    allow(redis).to receive(:eval).and_return(['inflight', 'tok-xyz'])
-    svc = described_class.new(id_key: id_key, body: body, redis: redis)
-    res = svc.call
-    expect(res[:status]).to eq(:inflight)
-    expect(res[:token]).to eq('tok-xyz')
+  context 'when redis reports inflight' do
+    before { allow(redis).to receive(:eval).and_return(['inflight', 'tok-xyz']) }
+
+    it 'returns inflight and token' do
+      expect(call_service[:status]).to eq(:inflight)
+      expect(call_service[:token]).to eq('tok-xyz')
+    end
   end
 
-  it 'returns committed with parsed body when redis reports committed' do
-    allow(redis).to receive(:eval).and_return(['committed', '200', '{"ok":true}'])
-    svc = described_class.new(id_key: id_key, body: body, redis: redis)
-    res = svc.call
-    expect(res[:status]).to eq(:committed)
-    expect(res[:status_code]).to eq(200)
-    expect(res[:body]).to eq({'ok' => true})
+  context 'when redis reports committed with valid JSON' do
+    before { allow(redis).to receive(:eval).and_return(['committed', '200', '{"ok":true}']) }
+
+    it 'returns committed with parsed body and status code' do
+      result = call_service
+      expect(result[:status]).to eq(:committed)
+      expect(result[:status_code]).to eq(200)
+      expect(result[:body]).to eq({ 'ok' => true })
+    end
   end
 
-  it 'returns conflict when redis reports conflict' do
-    allow(redis).to receive(:eval).and_return(['conflict'])
-    svc = described_class.new(id_key: id_key, body: body, redis: redis)
-    res = svc.call
-    expect(res[:status]).to eq(:conflict)
+  context 'when redis reports committed with invalid JSON' do
+    before { allow(redis).to receive(:eval).and_return(['committed', '200', 'not-a-json']) }
+
+    it 'returns committed and raw body string' do
+      result = call_service
+      expect(result[:status]).to eq(:committed)
+      expect(result[:body]).to eq('not-a-json')
+    end
+  end
+
+  context 'when redis reports conflict' do
+    before { allow(redis).to receive(:eval).and_return(['conflict']) }
+
+    it 'returns conflict' do
+      expect(call_service[:status]).to eq(:conflict)
+    end
+  end
+
+  context 'when redis returns unknown status' do
+    before { allow(redis).to receive(:eval).and_return(['mystery_status']) }
+
+    it 'returns error' do
+      expect(call_service[:status]).to eq(:error)
+    end
   end
 end

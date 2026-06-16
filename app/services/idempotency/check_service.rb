@@ -26,14 +26,20 @@ module Idempotency
     # Returns a hash with keys :status and additional fields depending on outcome.
     def call
       script = Rails.root.join('lib/redis_scripts/check_and_claim.lua').read
-      res = redis.eval(script, keys: [redis_key], argv: [fingerprint, token, ttl])
+
+      begin
+        res = redis.eval(script, keys: [redis_key], argv: [fingerprint, token, ttl])
+      rescue StandardError => e
+        Rails.logger.error('Idempotency::CheckService - redis unavailable')
+        return { status: :error, error_code: 'idempotency_store_unavailable', error_message: 'Idempotency store unavailable' }
+      end
 
       case res[0]
       when 'first'   then { status: :first, token: res[1] }
       when 'inflight' then { status: :inflight, token: res[1] }
       when 'committed' then { status: :committed, status_code: res[1].to_i, body: parse_json(res[2]) }
       when 'conflict' then { status: :conflict }
-      else { status: :error }
+      else { status: :error, error_code: 'unknown_redis_response', error_message: 'Unknown response from idempotency store' }
       end
     end
 
